@@ -8,6 +8,8 @@ import logging
 import subprocess
 import tempfile
 
+from ruamel.yaml import enc
+
 from ydb.core.fq.libs.config.protos.fq_config_pb2 import TConfig as TFederatedQueryConfig
 from ydb.core.protos import blobstorage_pdisk_config_pb2 as pdisk_config_pb
 from google.protobuf import json_format
@@ -678,9 +680,9 @@ class StaticConfigGenerator(object):
                 }
             })
 
-            # copy all selector_config elements without validation (for now) to dynconfig
-            for elem in self.__cluster_details.selector_config:
-                dynconfig['selector_config'].append(elem)
+        # copy all selector_config elements without validation (for now) to dynconfig
+        for elem in self.__cluster_details.selector_config:
+            dynconfig['selector_config'].append(elem)
 
         # emulate dumping ordered dict to yaml
         lines = []
@@ -1193,10 +1195,13 @@ class StaticConfigGenerator(object):
                 # we should still allow it even if the naming contains `encrypted`. We have to rely on yaml config
                 # because there is no way in proto message to distinguish between missing and undefined keys
                 encryption_mode_0 = False
-                for storage_pool_type in domains_config_dict['domain'][0]['storage_pool_types']:
-                    if storage_pool_type['kind'] == pool.Kind and 'encryption_mode' in storage_pool_type['pool_config']:
-                        encryption_mode_0 = True
-                        break
+                try:
+                    for storage_pool_type in domains_config_dict['domain'][0]['storage_pool_types']:
+                        if storage_pool_type['kind'] == pool.Kind and 'encryption_mode' in storage_pool_type['pool_config']:
+                            encryption_mode_0 = True
+                            break
+                except KeyError:
+                    encryption_mode_0 = False
 
                 if not encryption_mode_0:
                     raise RuntimeError(f"You named a storage pool '{pool.Kind}', but did not explicitly enable `pool_config.encryption_mode: 1`. Either specify the value (0 or 1) or rename the pool")
@@ -1204,7 +1209,7 @@ class StaticConfigGenerator(object):
             # Check disk type is specified for every pool
             type_defined = False
             for filterElement in pool.PoolConfig.PDiskFilter:
-                if filterElement.Property and filterElement.Property[0].Type:
+                if filterElement.Property and filterElement.Property[0].Type is not None:
                     type_defined = True
 
             if not type_defined:
@@ -1216,8 +1221,8 @@ class StaticConfigGenerator(object):
             raise ValueError('Multiple domains specified: len(domains_config.domain) > 1. This is unsupported')
 
         domain = domains[0]
-        pool_kinds = []
         if not domain.StoragePoolTypes:
+            print("generating defaults")
             pool_kinds = ['ssd', 'rot', 'ssdencrypted', 'rotencrypted']
             for pool_kind in pool_kinds:
                 storage_pool_type = domain.StoragePoolTypes.add()
@@ -1438,15 +1443,15 @@ class StaticConfigGenerator(object):
         if self.__cluster_details.use_new_style_config_yaml:
             # By default, we create a set of state storage nodes equal to a set of nodes
             # in static blobstorage groups.
-            if self.__cluster_details.blob_storage_config:
-                blobstorage_config = self.__cluster_details.blob_storage_config
-
-                for group in blobstorage_config['service_set']['groups']:
+            try:
+                blobstorage_config = self.__cluster_details.blob_storage_config or {}
+                groups = blobstorage_config['service_set']['groups']
+                for group in groups:
                     for ring in group['rings']:
                         for fail_domain in ring['fail_domains']:
                             for vdisk_location in fail_domain['vdisk_locations']:
                                 selected_ids.append(int(vdisk_location['node_id']))
-            else:
+            except KeyError:
                 blobstorage_config = self.__proto_config("bs.txt")
                 for pdisk in blobstorage_config.ServiceSet.PDisks:
                     selected_ids.append(pdisk.NodeID)
